@@ -9,9 +9,6 @@ import java.util.Random;
 
 import javaquarium.BaseFish.Gender;
 
-/**
- * 
- */
 public class Aquarium 
 {	
 	Random randGen = new Random();

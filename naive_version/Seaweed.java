@@ -3,7 +3,6 @@ package javaquarium;
 public class Seaweed extends LivingBeing {
 
 	public Seaweed() {
-		// TODO Auto-generated constructor stub
 		super();
 	}
 	
