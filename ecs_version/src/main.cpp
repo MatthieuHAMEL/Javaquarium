@@ -30,18 +30,32 @@ template<> struct Characteristics<Grouper> { using feeding = Herbivorous; };
 template<> struct Characteristics<Sole> { using feeding = Herbivorous; };
 template<> struct Characteristics<Carp> { using feeding = Herbivorous; }; // TODO replace all of this by is_a (component inheritance)
 
-// Gives an unskewed distribution. uBound included
-int random_int(int lBound, int uBound) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<> distrib(lBound, uBound);
-  return distrib(gen);
+
+std::mt19937 rng{std::random_device{}()};
+
+flecs::entity random_fish(flecs::query<Fish>& fishQ) {
+  flecs::entity result;   // null by default
+  size_t seen = 0;
+
+  // Reservoir sampling
+  fishQ.each([&](flecs::entity e, Fish const&) {
+    ++seen;
+    std::uniform_int_distribution<std::size_t> dist(1, seen);
+    if (dist(rng) == 1) {
+      result = e;
+    }
+  });
+  
+  return result;
 }
 
 class Aquarium final
 {
 public:
-  Aquarium() : m_seaweedQ {m_world.query_builder<Seaweed>().build()} {
+  Aquarium() :
+    m_seaweedQ {m_world.query_builder<Seaweed>().build()},
+    m_fishQ {m_world.query_builder<Fish>().build()}
+  {
     // Herbivorous fishes eat seaweeds
     m_world.system<Fish>().with<FeedingR, Herbivorous>()
       // enables defer_suspend so that the victim is really destroyed.
@@ -63,31 +77,20 @@ public:
 
     // Carnivorous fishes eat other fishes
     m_world.system<Fish>().with<FeedingR, Carnivorous>().immediate()
-      .run([](flecs::iter& it) {
-        while (it.next()) {
-          cout << "COUNT OF CARN ITER: " << it.count() << endl;
-          // if (it.count() == 1) {
-          //   cout << "returning 68 one fish\n";
-          //   return; // Otherwise the below do..while will never end!
-          // }
-          unsigned w=0;
-          for(auto i : it) {
-            w++;
-            flecs::entity predator = it.entity(i);
-            cout << "hi from predator: " << predator.get<Fish>().name << endl;
-            flecs::entity victim;
-            do {
-              int randomIdx = random_int(0, static_cast<int>(it.count() - 1));
-              victim = it.entity(randomIdx);
-            } while(victim == predator); // the predator shouldn't eat itself
-            cout << predator.get<Fish>().name << " is eating " << victim.get<Fish>().name << '\n';
-            it.world().defer_suspend();
-            victim.destruct();
-            it.world().defer_resume();
-          }
-
-          cout << "COUNT BYLOOP : " << w << endl;
+      .each([&](flecs::entity predator, Fish const& f) {
+        if (m_world.count<Fish>() == 1) { // There's only one remaining fish in the aquarium
+          cout << "One fish left! " << f.name << " can't eat!\n";
+          return; // Otherwise the below do..while will never end!
         }
+
+        flecs::entity victim;
+        do {
+          victim = random_fish(m_fishQ);
+        } while(victim == predator); // the predator shouldn't eat itself!
+        cout << f.name << " is eating " << victim.get<Fish>().name << '\n';
+        m_world.defer_suspend();
+        victim.destruct();
+        m_world.defer_resume();
       });
   }
   template<typename SPECY>
@@ -108,6 +111,10 @@ public:
 
   void tick() {
     m_world.progress();
+    printAquarium();
+  }
+
+  void printAquarium() {
     println("There are {} seaweeds and {} fishes:", m_world.count<Seaweed>(), m_world.count<Fish>());
     m_world.each<Fish>([](flecs::entity e, Fish const& f) {
       cout << "\t- " << f.name << "(" << toChar(f.sex) << ") "
@@ -117,6 +124,7 @@ public:
 private:
   flecs::world m_world;
   flecs::query<Seaweed> m_seaweedQ;
+  flecs::query<Fish> m_fishQ;
 };
 
 auto main() -> int {
@@ -129,7 +137,10 @@ auto main() -> int {
     .add_fish<Sole>("Samantha", Sex::F)
     .add_seaweed(10);
 
-  for (size_t i = 0; i < 15; ++i) {
+  println("----- Initial state -----");
+  aq.printAquarium();
+  
+  for (size_t i = 1; i < 15; ++i) {
     println("----- Step {} -----", i);
     aq.tick();
   }
