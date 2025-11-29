@@ -17,6 +17,16 @@ struct Living {
   int healthPoints;
 };
 
+// Returns whether the Living is dead or not
+bool changeHealth(Living& iLiving, int delta) {
+  iLiving.healthPoints += delta;
+  return (iLiving.healthPoints <= 0);
+}
+
+bool isHungry(Living const& iLiving) {
+  return iLiving.healthPoints <= 5;
+}
+
 // The fish species
 struct SpeciesR{}; // Relationship symbol
 struct Bass{}; struct Tuna{}; struct ClownFish{}; struct Grouper{}; struct Sole{}; struct Carp{};
@@ -59,23 +69,47 @@ public:
     m_seaweedQ {m_world.query_builder<Seaweed>().build()},
     m_fishQ {m_world.query_builder<Fish>().build()}
   {
-    m_world.component<Living>().add(flecs::OnInstantiate, flecs::Inherit);
+    m_world.component<Living>().add(flecs::OnInstantiate, flecs::Override);
     m_livingPrefab = m_world.prefab().set<Living>({ .healthPoints = 10 });
+
+    // All seaweed get 1 HP at each turn
+    m_world.system<Seaweed, Living>()
+      .each([](Seaweed const&, Living& living) {
+        changeHealth(living, 1);
+      });
     
-    m_world.system<Fish>()
+    m_world.system<Fish, Living>()
       // enables defer_suspend so that the victim is really destroyed.
       // Otherwise several fishes eat the same seaweed because of flecs commands queuing.
       .immediate()
-      .each([this](flecs::entity predator, Fish const& f)
+      .each([this](flecs::entity predator, Fish const& f, Living& living)
       {
+//        cout << "my name is " << f.name << ", my HP is " << living.healthPoints << endl;
+        // The fish gets hungry at every turn: lose one HP
+        if (changeHealth(living, -1)) {
+          cout << f.name << " is dead because it was too hungry!\n";
+          m_world.defer_suspend();
+          predator.destruct();
+          m_world.defer_resume();
+        }
+
+        if (!isHungry(living)) {
+          return;
+        }
+        
+        // Now try to eat
         if (predator.has<FeedingR, Herbivorous>()) {
           // Look for a seaweed to eat
           m_seaweedQ.run([&](flecs::iter& it) {
             if (it.next()) {
               auto victim = it.entity(0); // The first seaweed I find
-              m_world.defer_suspend();
-              victim.destruct(); // yum yum
-              m_world.defer_resume();
+              if (changeHealth(victim.get_mut<Living>(), -2)) { // Seaweed HP has reached 0
+                m_world.defer_suspend();
+                victim.destruct();
+                m_world.defer_resume();
+              }
+              // The predator gets +3 HPs for eating a seaweed.
+              changeHealth(living, 3);
             } else {
               cout << f.name << " can't find any seaweed!\n";
             }
@@ -92,10 +126,15 @@ public:
           do {
             victim = random_fish(m_fishQ);
           } while(victim == predator); // the predator shouldn't eat itself!
+          
           cout << f.name << " is eating " << victim.get<Fish>().name << '\n';
-          m_world.defer_suspend();
-          victim.destruct();
-          m_world.defer_resume();
+          if (changeHealth(victim.get_mut<Living>(), -4)) { // The victim is dead
+            cout << victim.get<Fish>().name << " is dead... RIP\n";
+            m_world.defer_suspend();
+            victim.destruct();
+            m_world.defer_resume();
+          }
+          changeHealth(living, 5); // The predator gets HPs
         }
       });
   }
@@ -124,9 +163,12 @@ public:
 
   void printAquarium() {
     println("There are {} seaweeds and {} fishes:", m_world.count<Seaweed>(), m_world.count<Fish>());
-    m_world.each<Fish>([](flecs::entity e, Fish const& f) {
+    m_world.each([](flecs::entity e, Fish const& f, Living const& living) {
       cout << "\t- " << f.name << "(" << toChar(f.sex) << ") "
-           << "(" << e.target<SpeciesR>().name() << ")\n";
+           << "(" << e.target<SpeciesR>().name() << ") (" << living.healthPoints << " HP)\n";
+    });
+    m_world.each([](Seaweed const&, Living& living) {
+      cout << "\t- Seaweed (" << living.healthPoints << " HP)\n";
     });
   }
 private:
@@ -144,12 +186,12 @@ auto main() -> int {
     .add_fish<ClownFish>("Francesca", Sex::F)
     .add_fish<Tuna>("Gerard", Sex::M)
     .add_fish<Sole>("Samantha", Sex::F)
-    .add_seaweed(10);
+    .add_seaweed(5);
 
   println("----- Initial state -----");
   aq.printAquarium();
   
-  for (size_t i = 1; i < 15; ++i) {
+  for (size_t i = 1; i < 40; ++i) {
     println("----- Step {} -----", i);
     aq.tick();
   }
