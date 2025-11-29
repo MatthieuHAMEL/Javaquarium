@@ -43,6 +43,7 @@ template<> struct Characteristics<ClownFish> { using feeding = Carnivorous; };
 template<> struct Characteristics<Grouper> { using feeding = Herbivorous; };
 template<> struct Characteristics<Sole> { using feeding = Herbivorous; };
 template<> struct Characteristics<Carp> { using feeding = Herbivorous; }; // TODO replace all of this by is_a (component inheritance)
+// (Carp prefab is_a<Herbivorous>) -> adding a carp == adding a Carp with Herbivorous
 
 std::mt19937 rng{std::random_device{}()};
 
@@ -74,17 +75,14 @@ public:
 
     // All seaweed get 1 HP at each turn
     m_world.system<Seaweed, Living>()
-      .each([](Seaweed const&, Living& living) {
+      .each([](flecs::entity _e, Seaweed const&, Living& living) {
         changeHealth(living, 1);
       });
     
     m_world.system<Fish, Living>()
-      // enables defer_suspend so that the victim is really destroyed.
-      // Otherwise several fishes eat the same seaweed because of flecs commands queuing.
-      .immediate()
+      .immediate() // cf. defer_suspend. Don't queue an entity destruction here!
       .each([this](flecs::entity predator, Fish const& f, Living& living)
       {
-//        cout << "my name is " << f.name << ", my HP is " << living.healthPoints << endl;
         // The fish gets hungry at every turn: lose one HP
         if (changeHealth(living, -1)) {
           cout << f.name << " is dead because it was too hungry!\n";
@@ -126,7 +124,11 @@ public:
           do {
             victim = random_fish(m_fishQ);
           } while(victim == predator); // the predator shouldn't eat itself!
-          
+
+          if (victim.target<SpeciesR>() == predator.target<SpeciesR>()) {
+            cout << f.name << " wanted to eat " << victim.get<Fish>().name << " but they are of the same specy!\n";
+            return;
+          }
           cout << f.name << " is eating " << victim.get<Fish>().name << '\n';
           if (changeHealth(victim.get_mut<Living>(), -4)) { // The victim is dead
             cout << victim.get<Fish>().name << " is dead... RIP\n";
